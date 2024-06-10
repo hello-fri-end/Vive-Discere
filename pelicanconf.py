@@ -1,6 +1,5 @@
 AUTHOR = 'Anwaar Khalid'
 SITENAME = 'Anwaar Khalid'
-#SITEURL = "http://khalid_blog.vive-discere.com"
 SITEURL=''
 
 USER_LOGO_URL = SITEURL + 'images/dp.jpg' 
@@ -14,7 +13,7 @@ PATH = "content"
 
 TIMEZONE = 'Asia/Kolkata'
 
-THEME = './pelican-svbhack'
+THEME = './Theme/pelican-svbhack'
 
 DEFAULT_LANG = 'en'
 
