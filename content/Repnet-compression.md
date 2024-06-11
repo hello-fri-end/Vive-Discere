@@ -2,7 +2,8 @@ Title: Case Study: Compressing DeepMind’s RepNet for Edge Deployment
 Date: 2024-06-10 
 Category: Compression
 
-[![RepNet Compression](https://lh5.googleusercontent.com/7moy9Uva8eUn9_hM3IDkWI_pQ_8FlotQ1JFnu0O_BlV2qE1DbnyeQwzSo5n-8_uEdv61NSI995fB3qgA4mmG5H3ifqfy6xk4fVGwFjf6zhOdJ55O=w1280)](https://lh5.googleusercontent.com/7moy9Uva8eUn9_hM3IDkWI_pQ_8FlotQ1JFnu0O_BlV2qE1DbnyeQwzSo5n-8_uEdv61NSI995fB3qgA4mmG5H3ifqfy6xk4fVGwFjf6zhOdJ55O=w1280)
+
+![RepNet](./images/RepNet.gif)
 
 In this case study, we explore compressing neural networks for efficient deployment on edge devices with limited resources. We explore practical techniques like quantization, pruning, and tensorization using off-the-shelf open-source tools. 
 
@@ -19,7 +20,7 @@ For this experiment, we’ll attempt to compress Google DeepMind's [RepNet](http
 
 We chose RepNet for this demonstration because the base model performance is not suitable for running on mobile (as we’ll see below) making it a good candidate for compression. The architecture includes a diverse set of layers that we use to illustrate the use of different compression techniques. 
 
-[![RepNet](https://lh4.googleusercontent.com/TDb_cHp6dMDTSxLG-pA6z71bDN8PwcQHnNFrvho7Edf_nQ-wfvexehhndeH9jNXiEBpbiF2DtOVIo3RxwM_RBYvWIVwVfntA9TXMVZKDr75WHrLU=w1280)](https://lh4.googleusercontent.com/TDb_cHp6dMDTSxLG-pA6z71bDN8PwcQHnNFrvho7Edf_nQ-wfvexehhndeH9jNXiEBpbiF2DtOVIo3RxwM_RBYvWIVwVfntA9TXMVZKDr75WHrLU=w1280)
+![RepNet](./images/Repnet-arch.png)
 Figure 2. RepNet Model Architecture. Source [RepNet](https://sites.google.com/view/repnet).
 
 RepNet is composed of three fundamental building blocks, namely:

@@ -5,7 +5,7 @@ from __future__ import unicode_literals
 from datetime import datetime
 
 AUTHOR = 'Anwaar Khalid'
-SITENAME = 'Vive Discere'
+SITENAME = 'Anwaar Khalid'
 SITETITLE = 'Vive Discere'
 SITEURL=''
 RELATIVE_URLS=True
@@ -41,12 +41,9 @@ AUTHOR_FEED_RSS = None
 
 # Social widget
 SOCIAL = (
-    ("linkedin", "https://www.linkedin.com/in/anwaar-khalid/"),
-    ("github", "https://github.com/hello-fri-end"),
+    ("LinkedIn", "https://www.linkedin.com/in/anwaar-khalid/"),
+    ("GitHub", "https://github.com/hello-fri-end"),
 )
 
-LINKS = [
-        ('Categories', '/categories.html')
-        ]
 
 DEFAULT_PAGINATION = 10
