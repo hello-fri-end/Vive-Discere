@@ -1,17 +1,32 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*- #
+from __future__ import unicode_literals
+
+from datetime import datetime
+
 AUTHOR = 'Anwaar Khalid'
-SITENAME = 'Anwaar Khalid'
+SITENAME = 'Vive Discere'
+SITETITLE = 'Vive Discere'
 SITEURL=''
+RELATIVE_URLS=True
 
 USER_LOGO_URL = SITEURL + 'images/dp.jpg' 
 ROUND_USER_LOGO = True
 
 TAGLINE = "Machine Learning is cool"
 DISQUS_SITENAME = True
-USE_GENERIC_FONT_FAMILIES=True
+
+BROWSER_COLOR='#333333'
+PYGMENTS_STYLE='monokai'
+THEME_COLOR = 'light'
+THEME_COLOR_AUTO_DETECT_BROWSER_PREFERENCE = False
+THEME_COLOR_ENABLE_USER_OVERRIDE = False
 
 PATH = "content"
+OUTPUT_PATH = 'public'
 
 TIMEZONE = 'Asia/Kolkata'
+COPYRIGHT_YEAR = datetime.now().year
 
 THEME = './Theme/pelican-svbhack'
 
@@ -26,11 +41,12 @@ AUTHOR_FEED_RSS = None
 
 # Social widget
 SOCIAL = (
-    ("LinkedIn", "https://www.linkedin.com/in/anwaar-khalid/"),
-    ("GitHub", "https://github.com/hello-fri-end"),
+    ("linkedin", "https://www.linkedin.com/in/anwaar-khalid/"),
+    ("github", "https://github.com/hello-fri-end"),
 )
 
-DEFAULT_PAGINATION = 10
+LINKS = [
+        ('Categories', '/categories.html')
+        ]
 
-# Uncomment following line if you want document-relative URLs when developing
-# RELATIVE_URLS = True
+DEFAULT_PAGINATION = 10
