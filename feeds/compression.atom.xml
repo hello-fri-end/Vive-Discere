@@ -1,0 +1,314 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>Anwaar Khalid - Compression</title><link href="https://hello-fri-end.github.io/Vive-Discere/" rel="alternate"></link><link href="https://hello-fri-end.github.io/Vive-Discere/feeds/compression.atom.xml" rel="self"></link><id>https://hello-fri-end.github.io/Vive-Discere/</id><updated>2024-06-10T00:00:00+05:30</updated><entry><title>Case Study: Compressing DeepMind’s RepNet for Edge Deployment</title><link href="https://hello-fri-end.github.io/Vive-Discere/case-study-compressing-deepminds-repnet-for-edge-deployment.html" rel="alternate"></link><published>2024-06-10T00:00:00+05:30</published><updated>2024-06-10T00:00:00+05:30</updated><author><name>Anwaar Khalid</name></author><id>tag:hello-fri-end.github.io,2024-06-10:/Vive-Discere/case-study-compressing-deepminds-repnet-for-edge-deployment.html</id><summary type="html">&lt;p&gt;&lt;img alt="RepNet" src="./images/RepNet.gif"&gt;&lt;/p&gt;
+&lt;p&gt;In this case study, we explore compressing neural networks for efficient deployment on edge devices with limited resources. We explore practical techniques like quantization, pruning, and tensorization using off-the-shelf open-source tools. &lt;/p&gt;
+&lt;p&gt;Our aim is to illustrate a typical model compression workflow, highlighting the approaches and techniques used to analyse a …&lt;/p&gt;</summary><content type="html">&lt;p&gt;&lt;img alt="RepNet" src="./images/RepNet.gif"&gt;&lt;/p&gt;
+&lt;p&gt;In this case study, we explore compressing neural networks for efficient deployment on edge devices with limited resources. We explore practical techniques like quantization, pruning, and tensorization using off-the-shelf open-source tools. &lt;/p&gt;
+&lt;p&gt;Our aim is to illustrate a typical model compression workflow, highlighting the approaches and techniques used to analyse a model from a compression perspective, and how to select and apply the appropriate compression techniques expected to yield the best results. We begin our experiment by understanding the target model and how it behaves, before diving into sequentially applying several state-of-the-art techniques and explaining the thought process at each step. &lt;/p&gt;
+&lt;p&gt;Join us as we go through this process to learn useful insights and optimization strategies to use when deploying models on mobile and edge devices!&lt;/p&gt;
+&lt;p&gt;&lt;em&gt;NB: If you're interested in trying out these techniques, check out our demo notebook &lt;a href="https://colab.research.google.com/drive/1oUzrLxEICgdWWuc4PnS3SoD9edmwHHi_#scrollTo=rh74CTuW2-cV"&gt;here&lt;/a&gt; which you can use to follow along. It provides all the code used to reproduce and experiment with the results presented here.&lt;/em&gt;&lt;/p&gt;
+&lt;h2&gt;Understanding the Model&lt;/h2&gt;
+&lt;p&gt;For this experiment, we’ll attempt to compress Google DeepMind's &lt;a href="https://sites.google.com/view/repnet"&gt;RepNet&lt;/a&gt; model. RepNet is a model that predicts the count of repeating actions in a video. Because the model is class agnostic, it can be used to detect various repetitive actions in different contexts. &lt;/p&gt;
+&lt;p&gt;We chose RepNet for this demonstration because the base model performance is not suitable for running on mobile (as we’ll see below) making it a good candidate for compression. The architecture includes a diverse set of layers that we use to illustrate the use of different compression techniques. &lt;/p&gt;
+&lt;p&gt;&lt;img alt="RepNet" src="./images/Repnet-arch.png"&gt;
+Figure 2. RepNet Model Architecture. Source &lt;a href="https://sites.google.com/view/repnet"&gt;RepNet&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;RepNet is composed of three fundamental building blocks, namely:
+* An encoder layer that generates per-frame embeddings from the input videos.
+* A temporal self-similarity layer that computes all pairwise similarities (distances) between the calculated frame embeddings.
+* A period predictor block that outputs the (a) per-frame binary periodicity classification (whether the frame relates to a repeated action or not) and (b) per-frame period length estimation (how many times the action was carried until the frame).&lt;/p&gt;
+&lt;h2&gt;Building Intuition for Compression&lt;/h2&gt;
+&lt;h3&gt;Sensitivity Analysis&lt;/h3&gt;
+&lt;p&gt;Instead of blindly applying model compression techniques to the model, it is common practice to identify the latency and memory bottlenecks within the network to perform a more targeted and efficient compression. This sensitivity analysis involves running and timing inference on each major block making up the architecture as well as their trainable parameters. &lt;/p&gt;
+&lt;p&gt;To measure this, we run inference on a sample of inputs while making sure to separately time each submodule’s latency and measure the number of trainable parameters at each step. This allows us to track how the overall inference runtime and parameters count evolves from one layer to the next, and assess the contribution of each layer to the total inference time and model weight. We start with a warm-up of 10 initial runs and follow up with 32 runs to assess the speed of each component, with results averaged for accuracy. Using PyTorch on a Tesla V100-PCIE-16GB GPU, the script focuses on specific elements such as the encoder, temporal convolutional layers, TSM convolutional layer, period length head, and periodicity head, as the main building blocks of the architecture.&lt;/p&gt;
+&lt;p&gt;To ensure accuracy, we explicitly define the input sizes for these components based on the expected sequence of input transformation events during inference. For example, the encoder begins with an input size of 64 which is subsequently transformed to an input size of 1 at the temporal convolution layer, and so on. Consequently, we assume an input size of 1 for the temporal convolution layer and 64 for the encoder, precisely aligning with the actual input transformation process.&lt;/p&gt;
+&lt;p&gt;The analysis reveals that the &lt;strong&gt;temporal convolution submodule makes up half of the model’s weights &lt;/strong&gt;but the &lt;strong&gt;encoder submodule is responsible for more than two-thirds of the overall latency. &lt;/strong&gt;It is thus natural to focus our efforts on these two submodules.&lt;/p&gt;
+&lt;p&gt;&lt;img alt="RepNet" src="./images/parameter-contribution.png"&gt;&lt;/p&gt;
+&lt;p&gt;Fig 3. Parameter and Latency Contribution of each Submodule&lt;/p&gt;
+&lt;h3&gt;Baseline Benchmarks&lt;/h3&gt;
+&lt;p&gt;To assess the impact of applying model compression techniques, we track three key metrics namely &lt;strong&gt;Model Size, Accuracy, &lt;/strong&gt;and &lt;strong&gt;Latency.&lt;/strong&gt; For Accuracy, we look at the average OBO (Off by One) error, which shows the percentage of times predictions were off by just one count. Additionally, we use the Average MAE (Mean Absolute Error) to get the average normalised absolute error of predictions. Tracking these metrics helps us understand how the model performs in terms of size, accuracy, and speed, and how these values change when we apply compression techniques. &lt;/p&gt;
+&lt;p&gt;We use the &lt;a href="https://tomrunia.github.io/projects/repetition/"&gt;QUVARepetetions Dataset&lt;/a&gt; for benchmarking. The dataset consists of 100 short videos of various repeating actions and is also used by the authors of the model to initially benchmark the performance against comparable architectures. &lt;/p&gt;
+&lt;p&gt;Since compression is highly hardware-dependent, we begin by running the benchmarks on the target device early on. For this, we use Pytorch's &lt;a href="https://pytorch.org/tutorials/recipes/mobile_perf.html#android-benchmarking-setup"&gt;benchmarking binary&lt;/a&gt; to run a _scripted _pytorch model on the device without having to learn anything about mobile development. &lt;/p&gt;
+&lt;p&gt;The table below shows benchmark results for the baseline model on a Samsung S22 Plus phone with batch sizes of 1, 8, and 16. Each frame has dimensions 112x112 and the model processes 64 frames per iteration.  The model size is 97.97 MB, with OBO at 0.32 and MAE at 0.17.&lt;/p&gt;
+&lt;table&gt;
+  &lt;tr&gt;
+   &lt;td&gt;&lt;strong&gt;Input Dimensions&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;Seconds Per Iteration&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;Iteration Per Second&lt;/strong&gt;
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;1,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;2.77
+   &lt;/td&gt;
+   &lt;td&gt;0.36
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;8,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;22.5
+   &lt;/td&gt;
+   &lt;td&gt;0.04
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;16,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;49.3
+   &lt;/td&gt;
+   &lt;td&gt;0.02
+   &lt;/td&gt;
+  &lt;/tr&gt;
+&lt;/table&gt;
+
+&lt;h2&gt;Compressing the Model&lt;/h2&gt;
+&lt;p&gt;We can begin our compression experiments now that we have a better idea of various memory and latency bottlenecks in our model and how well it runs on the target device. We first explore pruning, tensorization, and quantization in isolation before experimenting with various combinations of these techniques.&lt;/p&gt;
+&lt;h3&gt;Tensorization&lt;/h3&gt;
+&lt;p&gt;Tensorization involves representing the weights of layers of neural networks in a factorized form using tensor decomposition methods like Tucker, CP, etc. &lt;a href="https://tensorly.org/torch/dev/"&gt;Tensorly-Torch&lt;/a&gt; provides off-the-shelf factorized layers that can directly be replaced with their standard pytorch counterparts where the pre-trained weights are used to initialise the layers. However, Tensorly-Torch is not compatible with _torch.jit.script _as highlighted in this &lt;a href="https://github.com/tensorly/torch/issues/33"&gt;issue&lt;/a&gt;, so we use TensorLy to perform the decompositions and implement custom factorized layers.&lt;/p&gt;
+&lt;p&gt;Tensorization works especially well with convolutional layers where kernels of any order ( 2D, 3D, or more!) can be parametrized efficiently using tensor decomposition algorithms. For example, using a CP decomposition results in a separable convolution that can replace your original convolution with a series of small efficient ones that work better on mobile phones.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Tensorizing the Convolution Layer&lt;/strong&gt;. Because the Temporal Convolution layer consists of the maximum number of parameters, we begin by tensorizing this layer first. Running experiments using different decomposition ranks shows that a rank of 0.1 yields the best results in this case. With this rank, the model size decreases to 62.85MB, and the inference time is cut in half. Notably, prediction accuracy improves with OBO decreasing to 0.29 and MAE to 0.167, without fine-tuning the model. While this is not a common result, we believe the model’s original performance may be impacted by inherent noise, and we attribute the increase in prediction accuracy to the regularisation effect of tensorization which reduces the noise in the network, allowing it to generalise better.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Tensorizing the Feature Extractor&lt;/strong&gt;. Tensorizing this part was challenging as it includes numerous convolutional layers, making grid searching for optimal ranks impractical. Rank selection for tensor decompositions is a hard problem because determining the optimal rank involves finding the right balance between capturing the essential structure of the underlying data and avoiding overfitting. Selecting a rank that is too low may result in a loss of important information, leading to a poor approximation of the original tensor. On the other hand, selecting a rank that is too high can lead to overfitting, where the model captures noise or irrelevant details, hindering generalisation to new data. Additionally, the computational complexity of searching for the optimal rank increases as the number of possible ranks grows exponentially.&lt;/p&gt;
+&lt;p&gt;Practitioners generally rely on heuristics or meta-learning for determining the optimal ranks. The authors of &lt;a href="https://arxiv.org/abs/1511.06530"&gt;Compression of Deep Convolutional Neural Networks for Fast and Low Power Mobile&lt;/a&gt; have used Variational Bayesian Matrix Factorization (VBMF) successfully on various networks, including VGG-16 and AlexNet. VBMF is a complicated technique and out of the scope of this post, but on a high level, it involves approximating a matrix V&lt;sub&gt;LxM&lt;/sub&gt; as the sum of a lower-ranking matrix B&lt;sub&gt;LxH&lt;/sub&gt;A&lt;sup&gt;T&lt;sub&gt;HxM&lt;/sub&gt;&lt;/sup&gt; and Gaussian noise. After A and B are found, H acts as an upper bound on the rank. VBMF is a very promising tool because it can automatically find noise variance, and rank and even provide theoretical condition for perfect rank recovery (&lt;a href="https://www.jmlr.org/papers/volume14/nakajima13a/nakajima13a.pdf"&gt;Nakajima et al., 2012&lt;/a&gt;). We determined the rank R3 and R4 by applying global analytic VBMF on mode-3 and mode-4 matricization of the convolutional kernel tensors K and managed to reduce the model size to 84.19 MB. In this case, MAE error increased to 0.27 while OBO decreased to 0.29. &lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Tensorizing the Entire Encoder&lt;/strong&gt;. Finally, we experiment with tensorizing the entire encoder as it makes up for the bulk of the latency and memory footprint of the model. We use VMBF ranks for the Resnet50 part and a set of different ranks for the Conv3D layer and get the best results with a rank of 0.1. We can see an average of 1.7x speedup across all the batch sizes. This is mainly due to the reduction in arithmetic intensity as a result of tensorization. The model size is reduced to 51.8MB, OBO decreases to 0.30 while MAE increases to 0.21. The results are summarised in the following table:&lt;/p&gt;
+&lt;table&gt;
+  &lt;tr&gt;
+   &lt;td&gt;&lt;strong&gt;Input Dimensions&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;Seconds Per Iter&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;Iter Per Second&lt;/strong&gt;
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;1,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;1.51
+   &lt;/td&gt;
+   &lt;td&gt;0.66
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;8,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;12.9
+   &lt;/td&gt;
+   &lt;td&gt;0.08
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;16,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;32.4
+   &lt;/td&gt;
+   &lt;td&gt;0.03
+   &lt;/td&gt;
+  &lt;/tr&gt;
+&lt;/table&gt;
+
+&lt;h3&gt;Pruning&lt;/h3&gt;
+&lt;p&gt;Pruning is a technique aimed at reducing the size of a deep neural network by eliminating non-essential parameters, or weights. &lt;strong&gt;Structured Pruning&lt;/strong&gt; involves removing specific structures like neurons in a fully connected layer, channels or filters in a convolutional layer, or self-attention heads in transformers. Conversely, &lt;strong&gt;Unstructured Pruning&lt;/strong&gt; targets and removes individual weights based on criteria such as magnitude or their contribution to the overall loss function during training, without adhering to a specific structural pattern.&lt;/p&gt;
+&lt;p&gt;Given the intended scope of our solution, where we want to deploy on as wide a range of devices as possible, we focus on structured pruning as it is a more hardware-agnostic technique. Because unstructured pruning introduces sparsity in the model, it is generally not suitable for all hardware devices, for example, GPUs are not well-suited for processing sparse matrices, and using unstructured pruning on devices with embedded GPU won’t yield significant performance improvements. Conversely, structural pruning involves removing entire neurons, layers, or other structured components from the neural network to reduce size and complexity and is thus a viable solution regardless of the device. For our experiments, we use the &lt;a href="https://github.com/VainF/Torch-Pruning"&gt;Torch-Pruner&lt;/a&gt; library which provides off-the-shelf utilities for structured pruning. &lt;/p&gt;
+&lt;p&gt;In the following table, benchmark results demonstrate an average 2.19x latency reduction achieved by the pruned model compared to the baseline. Notably, we reduced the model size to approximately 58% of the original model size by pruning 35% of the ResNet encoder layer and 64% of the Temporal Convolution layer. There is a minimal drop in accuracy with MAE at 0.22 and OBO at 0.34.&lt;/p&gt;
+&lt;table&gt;
+  &lt;tr&gt;
+   &lt;td&gt;&lt;strong&gt;Input Dimensions&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;Seconds Per Iter&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;Iter Per Second&lt;/strong&gt;
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;1,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;1.25
+   &lt;/td&gt;
+   &lt;td&gt;0.79
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;8,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;10.8
+   &lt;/td&gt;
+   &lt;td&gt;0.08
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;16,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;22.2
+   &lt;/td&gt;
+   &lt;td&gt;0.05
+   &lt;/td&gt;
+  &lt;/tr&gt;
+&lt;/table&gt;
+
+&lt;h3&gt;Quantization&lt;/h3&gt;
+&lt;p&gt;Quantization refers to the process of converting the weights of a neural network from a high-precision bidwidth (e.g. float32) to a lower precision bidwidth (e.g. float16 or int8). We use Pytorch's built-in Quantization API for all of our quantization experiments. &lt;/p&gt;
+&lt;p&gt;To determine which parts of the model to target for quantization, we first test-quantize the whole model and measure the &lt;a href="https://en.wikipedia.org/wiki/Signal-to-quantization-noise_ratio"&gt;Signal-To-Quantization-Noise-Ratio (SQNR)&lt;/a&gt; of each layer of the quantized model to quantify the sensitivity of the weights and activations to quantization. SQNR measures the amount of signal power (or information in this context) lost due to quantization, relative to the amount of noise introduced by quantization. A higher SQNR indicates that the layer is less affected by quantization noise, and therefore should be targeted for quantization to minimise accuracy loss. Running this sensitivity reveals that, consistent with the inference sensitivity we conducted above, both the temporal and the encoder layers are better fit for quantization.&lt;/p&gt;
+&lt;p&gt;We run the final quantization experiments using post-training static quantization which involves calibrating the quantization parameters ahead of time and allows us to compress the model more than we would using dynamic quantization which defines the quantization values during inference. With post-training static quantization, we reduce the model size by 12% and improve model inference by 1.2x speedup compared to the baseline model. Accuracy drop is minimal with OBO at 0.38 and MAE at 0.31. The results are summarised in the following table:&lt;/p&gt;
+&lt;table&gt;
+  &lt;tr&gt;
+   &lt;td&gt;&lt;strong&gt;Input Dimensions&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;Seconds Per Iteration&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;Iterations Per Second&lt;/strong&gt;
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;1,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;2.64
+   &lt;/td&gt;
+   &lt;td&gt;0.380
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;8,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;16.3
+   &lt;/td&gt;
+   &lt;td&gt;0.060
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;16,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;46.9
+   &lt;/td&gt;
+   &lt;td&gt;0.022
+   &lt;/td&gt;
+  &lt;/tr&gt;
+&lt;/table&gt;
+
+&lt;h2&gt;Combining Compression Techniques&lt;/h2&gt;
+&lt;p&gt;Having studied the impacts on the performance of each group of compression techniques, we move into combining them to achieve the best overall performance improvement.&lt;/p&gt;
+&lt;p&gt;We begin with pruning the model since the use of structured pruning allows us to contain the impact on the model architecture to the removal of layers and blocks of neurons, and doesn’t introduce new components that may be incompatible with the other techniques.&lt;/p&gt;
+&lt;p&gt;We proceed to apply tensorization on the pruned model, leaving quantization at the end since quantizing the model replaces all the target layers with quantized versions that are not supported by the tensorization operations we use. Combining tensorization with pruning only minimally impacts accuracy but already allows us to achieve almost double the speed-up obtained from pruning only. Interestingly, we also separately tried tensorizing the model first before pruning it and this resulted in a significant dip in accuracy, which highlights the importance of conducting thorough tests when designing optimization pipelines.&lt;/p&gt;
+&lt;p&gt;Finally, applying SQNR-guided post-training static quantization to the pruned and tensorized model allows us to achieve an overall speed-up of 3.5x compared to the baseline model and a 70.5% decrease in model size. Impact on accuracy compounds but remains within acceptable boundaries with OBO at 0.40 and MAE at 0.21. This lost accuracy can be recovered by subsequent fine-tuning.&lt;/p&gt;
+&lt;table&gt;
+  &lt;tr&gt;
+   &lt;td&gt;&lt;strong&gt;Input Dimensions&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;Seconds Per Iteration&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;Iterations Per Second&lt;/strong&gt;
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;1,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;0.85
+   &lt;/td&gt;
+   &lt;td&gt;1.17
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;8,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;6.3
+   &lt;/td&gt;
+   &lt;td&gt;0.142
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;16,3,64,112,112
+   &lt;/td&gt;
+   &lt;td&gt;13.5
+   &lt;/td&gt;
+   &lt;td&gt;0.073
+   &lt;/td&gt;
+  &lt;/tr&gt;
+&lt;/table&gt;
+
+&lt;p&gt;Conclusion&lt;/p&gt;
+&lt;p&gt;Through this blog post, we have outlined the overall process for compressing a model and optimising it for edge deployment by using various techniques and libraries. The following table summarises the results achieved with all the techniques:&lt;/p&gt;
+&lt;table&gt;
+  &lt;tr&gt;
+   &lt;td&gt;&lt;strong&gt;Setup&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;Model Size (MB)&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;Speedup&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;OBO&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;&lt;strong&gt;MAE&lt;/strong&gt;
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;&lt;strong&gt;Baseline&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;97.97
+   &lt;/td&gt;
+   &lt;td&gt;-
+   &lt;/td&gt;
+   &lt;td&gt;0.32
+   &lt;/td&gt;
+   &lt;td&gt;0.17
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;&lt;strong&gt;Tensorized&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;51.80
+   &lt;/td&gt;
+   &lt;td&gt;1.7x
+   &lt;/td&gt;
+   &lt;td&gt;0.30
+   &lt;/td&gt;
+   &lt;td&gt;0.21
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;&lt;strong&gt;Pruned&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;57.56
+   &lt;/td&gt;
+   &lt;td&gt;2.19x
+   &lt;/td&gt;
+   &lt;td&gt;0.34
+   &lt;/td&gt;
+   &lt;td&gt;0.22
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;&lt;strong&gt;Quantized&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;86.14
+   &lt;/td&gt;
+   &lt;td&gt;1.2x
+   &lt;/td&gt;
+   &lt;td&gt;0.38
+   &lt;/td&gt;
+   &lt;td&gt;0.31
+   &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td&gt;&lt;strong&gt;Pruning + Tensorization + Quantization&lt;/strong&gt;
+   &lt;/td&gt;
+   &lt;td&gt;28.92
+   &lt;/td&gt;
+   &lt;td&gt;3.5x
+   &lt;/td&gt;
+   &lt;td&gt;0.40
+   &lt;/td&gt;
+   &lt;td&gt;0.21
+   &lt;/td&gt;
+  &lt;/tr&gt;
+&lt;/table&gt;
+
+&lt;p&gt;Of course, the proposed solution isn't necessarily the best depending on the use case, and selecting the appropriate hyperparameters/compression modes often boils down to running several tests to find the combination that strikes the best balance in terms of performance vs accuracy, taking into account one's personal objectives that may involve putting more emphasis on either metrics.&lt;/p&gt;
+&lt;p&gt;The libraries and tools we used are also not the only ones offering the utilities we needed, and we encourage you to explore using other tools as well! A good place to get started would be our blog post series on model compression where we outline the various tools available and what they uniquely offer, feel free to give it a read to learn more on the topic!&lt;/p&gt;
+&lt;p&gt;We hope this was informational and that it gave you some insights regarding model optimization, see you in the next one!&lt;/p&gt;
+&lt;h2&gt;Acknowledgements&lt;/h2&gt;
+&lt;p&gt;This case study was conducted at Unify with the collaborative efforts of Muhammad Elaseyad, Nassim Berrada, and Guillermo Brizeula.
+I extend my gratitude to their valuable contributions and insights throughout the project.&lt;/p&gt;</content><category term="Compression"></category></entry><entry><title>Tensorization: Breaking through the Ranks</title><link href="https://hello-fri-end.github.io/Vive-Discere/tensorization-breaking-through-the-ranks.html" rel="alternate"></link><published>2024-02-23T00:00:00+05:30</published><updated>2024-02-23T00:00:00+05:30</updated><author><name>Anwaar Khalid</name></author><id>tag:hello-fri-end.github.io,2024-02-23:/Vive-Discere/tensorization-breaking-through-the-ranks.html</id><content type="html">&lt;p&gt;&lt;a href="https://unify.ai/blog/model-tensorization"&gt;&lt;img alt="Tensorization" src="https://cdn.prod.website-files.com/64d9e7e32e307274f238b1ae/65d8c57150548dd2ead37cee_blog_post_header_12.webp"&gt;&lt;/a&gt;
+Having covered quantization and pruning, it’s time to move on to some of the more popular algorithms and libraries to leverage tensorization. As usual, we assume that you have gone over the introductory post of our model compression series. Read more &lt;a href="https://unify.ai/blog/model-tensorization"&gt;here&lt;/a&gt;.&lt;/p&gt;</content><category term="Compression"></category></entry><entry><title>Model Pruning: Keeping the Essentials</title><link href="https://hello-fri-end.github.io/Vive-Discere/model-pruning-keeping-the-essentials.html" rel="alternate"></link><published>2024-02-14T00:00:00+05:30</published><updated>2024-02-14T00:00:00+05:30</updated><author><name>Anwaar Khalid</name></author><id>tag:hello-fri-end.github.io,2024-02-14:/Vive-Discere/model-pruning-keeping-the-essentials.html</id><content type="html">&lt;p&gt;&lt;a href="https://unify.ai/blog/compression-pruning"&gt;&lt;img alt="Pruning" src="https://cdn.prod.website-files.com/64d9e7e32e307274f238b1ae/65d5e90b326c1878b10e9287_blog_post_header_10.webp"&gt;&lt;/a&gt;
+In the previous blog post of our model compression series we went over the available quantization libraries and their features. Now we will now go over the packages and tools that enable us to apply different kinds of pruning methods on our machine learning models. Read more &lt;a href="https://unify.ai/blog/compression-pruning"&gt;here&lt;/a&gt;.&lt;/p&gt;</content><category term="Compression"></category></entry><entry><title>Quantization: A Bit Can Go a Long Way</title><link href="https://hello-fri-end.github.io/Vive-Discere/quantization-a-bit-can-go-a-long-way.html" rel="alternate"></link><published>2024-01-27T00:00:00+05:30</published><updated>2024-01-27T00:00:00+05:30</updated><author><name>Anwaar Khalid</name></author><id>tag:hello-fri-end.github.io,2024-01-27:/Vive-Discere/quantization-a-bit-can-go-a-long-way.html</id><content type="html">&lt;p&gt;&lt;a href="https://unify.ai/blog/model-quantization"&gt;&lt;img alt="Quantization" src="https://cdn.prod.website-files.com/64d9e7e32e307274f238b1ae/65b7d39ab1916d44837f2c91_blog_post_header_07-5.png"&gt;&lt;/a&gt;
+Following up with our model compression blog post series, we will now delve into quantization, one of the more powerful compression techniques that we can leverage to reduce the size and memory footprint of our models. Read more &lt;a href="https://unify.ai/blog/model-quantization"&gt;here&lt;/a&gt;.&lt;/p&gt;</content><category term="Compression"></category></entry><entry><title>Model Compression: A Survey of Techniques, Tools, and Libraries</title><link href="https://hello-fri-end.github.io/Vive-Discere/model-compression-a-survey-of-techniques-tools-and-libraries.html" rel="alternate"></link><published>2024-01-06T00:00:00+05:30</published><updated>2024-01-06T00:00:00+05:30</updated><author><name>Anwaar Khalid</name></author><id>tag:hello-fri-end.github.io,2024-01-06:/Vive-Discere/model-compression-a-survey-of-techniques-tools-and-libraries.html</id><content type="html">&lt;p&gt;&lt;a href="https://unify.ai/blog/model-compression"&gt;&lt;img alt="Model Compression" src="https://cdn.prod.website-files.com/64d9e7e32e307274f238b1ae/659967d877b008b56bab6f78_blog_post_header_05-4.png"&gt;&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;Machine learning has witnessed a surge in interest in recent years driven by several factors including the availability of large datasets, advancements in transfer learning, and the development of more potent neural network structures, all giving rise to powerful models with wide ranges of applications. Read more &lt;a href="https://unify.ai/blog/model-compression"&gt;here&lt;/a&gt;.&lt;/p&gt;</content><category term="Compression"></category></entry></feed>
